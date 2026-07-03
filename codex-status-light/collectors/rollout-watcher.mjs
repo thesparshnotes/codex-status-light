@@ -41,7 +41,7 @@ class RolloutWatcher {
     await this.scanTodayFromStart();
     await this.recompute();
     await this.watchToday();
-    this.interval = setInterval(() => this.recompute().catch(() => {}), RECOMPUTE_MS);
+    this.interval = setInterval(() => this.scanAndRecompute().catch(() => {}), RECOMPUTE_MS);
     this.scheduleMidnightRefresh();
   }
 
