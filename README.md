@@ -1,6 +1,8 @@
-# Codex Usage Status
+# Codex Status Light
 
-Codex Usage Status is a tiny local Mac menu bar app for Codex Desktop. It reads your own local Codex session files, runs a small local daemon, and shows whether your Codex threads are done, running, or waiting for you: green means done, yellow means running or possibly waiting, and red means attention is needed.
+![Codex Status Light demo](assets/lock-close.gif)
+
+Codex Status Light is a tiny local Mac menu bar app for Codex Desktop. It reads your own local Codex session files, runs a small local daemon, and shows whether your Codex threads are done, running, or waiting for you: green means done, yellow means running or possibly waiting, and red means attention is needed.
 
 ## Prerequisites
 
@@ -19,11 +21,13 @@ Codex Usage Status is a tiny local Mac menu bar app for Codex Desktop. It reads 
 ./install.sh
 ```
 
-The installer installs daemon dependencies, creates a LaunchAgent for your user account, starts the local status API on port `4173`, and copies `Codex Usage Status.app` to `/Applications` when possible.
+The installer installs daemon dependencies, creates a LaunchAgent for your user account, starts the local status API on port `4173`, and copies the bundled app to `/Applications` when possible.
 
 ## Open The App
 
 Open `Codex Usage Status.app` from `/Applications`.
+
+The bundled app file is currently named `Codex Usage Status.app`, but the project name is Codex Status Light.
 
 Because the app is unsigned, macOS Gatekeeper may block the first launch. If that happens, right-click the app, choose Open, then choose Open again in the confirmation dialog. After the first launch, it should open normally.
 
