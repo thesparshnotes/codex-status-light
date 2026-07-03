@@ -1,0 +1,257 @@
+:root {
+  color-scheme: dark;
+  --bg: #101114;
+  --panel: #191b20;
+  --panel-strong: #20242b;
+  --text: #f2f4f7;
+  --muted: #a7adb8;
+  --line: #313741;
+  --red: #ff4c5f;
+  --yellow: #f5c84b;
+  --green: #49d17d;
+  --blue: #6aa9ff;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background: var(--bg);
+  color: var(--text);
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+.shell {
+  width: min(1120px, calc(100% - 32px));
+  margin: 0 auto;
+  padding: 32px 0;
+}
+
+.mast {
+  display: grid;
+  grid-template-columns: 132px 1fr;
+  gap: 28px;
+  align-items: center;
+  min-height: 220px;
+}
+
+.traffic-light {
+  display: grid;
+  gap: 14px;
+  width: 112px;
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #0b0c0f;
+  box-shadow: inset 0 0 0 1px #050608, 0 20px 70px rgba(0, 0, 0, 0.32);
+}
+
+.lamp {
+  width: 76px;
+  aspect-ratio: 1;
+  border-radius: 50%;
+  display: block;
+  background: #262a31;
+  border: 1px solid #343943;
+  opacity: 0.38;
+  transition: opacity 180ms ease, box-shadow 180ms ease, background 180ms ease;
+}
+
+.lamp.active {
+  opacity: 1;
+}
+
+.lamp-waiting.active {
+  background: var(--red);
+  box-shadow: 0 0 32px rgba(255, 76, 95, 0.72);
+}
+
+.lamp-running.active {
+  background: var(--yellow);
+  box-shadow: 0 0 32px rgba(245, 200, 75, 0.66);
+}
+
+.lamp-done.active {
+  background: var(--green);
+  box-shadow: 0 0 32px rgba(73, 209, 125, 0.66);
+}
+
+.eyebrow {
+  margin: 0 0 10px;
+  color: var(--muted);
+  font-size: 0.84rem;
+  text-transform: uppercase;
+  letter-spacing: 0;
+}
+
+h1 {
+  margin: 0;
+  font-size: clamp(2.6rem, 7vw, 5.8rem);
+  line-height: 0.95;
+  letter-spacing: 0;
+}
+
+.headline p:last-child {
+  max-width: 680px;
+  margin: 16px 0 0;
+  color: var(--muted);
+  font-size: 1.08rem;
+  line-height: 1.55;
+}
+
+.panel {
+  border-top: 1px solid var(--line);
+  padding-top: 24px;
+}
+
+.toolbar {
+  display: flex;
+  justify-content: space-between;
+  gap: 18px;
+  align-items: flex-end;
+  margin-bottom: 18px;
+}
+
+h2 {
+  margin: 0;
+  font-size: 1.1rem;
+}
+
+.toolbar p {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 0.92rem;
+}
+
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  color: var(--muted);
+  font-size: 0.88rem;
+}
+
+.legend span {
+  display: inline-flex;
+  gap: 7px;
+  align-items: center;
+}
+
+.dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.waiting {
+  background: var(--red);
+}
+
+.running {
+  background: var(--yellow);
+}
+
+.done {
+  background: var(--green);
+}
+
+.idle {
+  background: var(--blue);
+}
+
+.error {
+  background: #ff8a4c;
+}
+
+.stale {
+  background: #8a8f98;
+}
+
+.session-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 12px;
+}
+
+.session {
+  min-height: 116px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+}
+
+.session-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+}
+
+.session h3 {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: 1rem;
+  letter-spacing: 0;
+}
+
+.badge {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 28px;
+  padding: 0 10px;
+  border-radius: 999px;
+  background: var(--panel-strong);
+  color: var(--text);
+  font-size: 0.82rem;
+}
+
+.session-meta {
+  margin: 18px 0 0;
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  color: var(--muted);
+  font-size: 0.84rem;
+}
+
+.empty {
+  padding: 28px;
+  border: 1px dashed var(--line);
+  border-radius: 8px;
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.02);
+}
+
+@media (max-width: 700px) {
+  .shell {
+    width: min(100% - 24px, 1120px);
+    padding: 18px 0;
+  }
+
+  .mast {
+    grid-template-columns: 1fr;
+    gap: 20px;
+  }
+
+  .traffic-light {
+    grid-template-columns: repeat(3, 1fr);
+    width: min(100%, 280px);
+  }
+
+  .lamp {
+    width: 100%;
+  }
+
+  .toolbar {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}

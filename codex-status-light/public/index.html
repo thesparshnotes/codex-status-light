@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Codex Status Light</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <main class="shell">
+      <section class="mast">
+        <div class="traffic-light" aria-label="Overall Codex status">
+          <span class="lamp lamp-waiting" data-lamp="waiting"></span>
+          <span class="lamp lamp-running" data-lamp="running"></span>
+          <span class="lamp lamp-done" data-lamp="done"></span>
+        </div>
+        <div class="headline">
+          <p class="eyebrow">Codex Status Light</p>
+          <h1 id="overallLabel">Idle</h1>
+          <p id="overallMeta">Waiting for session updates.</p>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="toolbar">
+          <div>
+            <h2>Sessions</h2>
+            <p id="updatedAt">No updates yet</p>
+          </div>
+          <div class="legend" aria-label="Status legend">
+            <span><i class="dot waiting"></i>Needs attention</span>
+            <span><i class="dot running"></i>Running</span>
+            <span><i class="dot done"></i>Done</span>
+          </div>
+        </div>
+        <div id="sessions" class="session-grid"></div>
+      </section>
+    </main>
+    <script src="/app.js" type="module"></script>
+  </body>
+</html>
