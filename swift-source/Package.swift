@@ -11,6 +11,11 @@ let package = Package(
         .executable(name: "CodexUsageStatusDashboard", targets: ["CodexUsageStatusDashboard"])
     ],
     targets: [
-        .executableTarget(name: "CodexUsageStatusDashboard")
+        .executableTarget(
+            name: "CodexUsageStatusDashboard",
+            resources: [
+                .process("Resources")
+            ]
+        )
     ]
 )

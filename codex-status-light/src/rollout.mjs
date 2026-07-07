@@ -16,6 +16,7 @@ export function reduceSession(state = emptyRolloutState(), record) {
 
   if (record.type === "session_meta") {
     const payload = record.payload || {};
+    const threadSpawn = payload.source?.subagent?.thread_spawn;
     return {
       ...base,
       id: payload.session_id || payload.id || base.id,
@@ -24,6 +25,8 @@ export function reduceSession(state = emptyRolloutState(), record) {
       originator: payload.originator || base.originator,
       source: payload.source || base.source,
       isGuardian: isGuardianSource(payload.source) || base.isGuardian,
+      agentNickname: threadSpawn?.agent_nickname || base.agentNickname,
+      parentThreadId: threadSpawn?.parent_thread_id || base.parentThreadId,
       status: "running",
     };
   }
@@ -62,6 +65,10 @@ export function reduceSession(state = emptyRolloutState(), record) {
     return { ...base, status: "running", detail: undefined };
   }
 
+  if (timestamp) {
+    return { ...base, unknownTypes: appendUnknownType(base.unknownTypes, unknownTypeKey(record)) };
+  }
+
   return base;
 }
 
@@ -93,10 +100,13 @@ function emptyRolloutState() {
     originator: null,
     source: null,
     isGuardian: false,
+    agentNickname: null,
+    parentThreadId: null,
     status: "idle",
     detail: undefined,
     lastActivityAt: 0,
     completedAt: null,
+    unknownTypes: [],
   };
 }
 
@@ -129,9 +139,13 @@ export function looksLikeQuestion(text) {
   const optionLines = lines.filter((line) => /^(\d+\.|[A-Z]\.|-)\s+/.test(line));
   if (optionLines.length < 2) return false;
 
+  // A bare interrogative opener is not enough — report headings like
+  // "What changed:" would count. Require a question mark, or an
+  // interrogative line that actually addresses the user.
   return lines.some((line) =>
     /\?/.test(line) ||
-    /^(who|what|when|where|why|how|which|do|does|did|can|could|should|would|will|is|are)\b/i.test(line)
+    (/^(who|what|when|where|why|how|which|do|does|did|can|could|should|would|will|is|are)\b/i.test(line) &&
+      /\b(you|your|i)\b/i.test(line))
   );
 }
 
@@ -147,9 +161,14 @@ function timestampMs(record) {
 }
 
 function isActivityRecord(record) {
+  if (record.type === "turn_context") return true;
   if (record.type === "response_item") return true;
   if (record.type !== "event_msg") return false;
-  return ["task_started", "user_message", "token_count"].includes(record.payload?.type);
+  const payloadType = record.payload?.type;
+  return (
+    ["task_started", "user_message", "token_count"].includes(payloadType) ||
+    /^(task_|turn_|user_|agent_|exec_|patch_|web_search|mcp_|tool_|token_)/.test(String(payloadType || ""))
+  );
 }
 
 function isErrorRecord(record) {
@@ -191,4 +210,13 @@ function parseFunctionArguments(value) {
 
 function isGuardianSource(source) {
   return source?.subagent?.other === "guardian";
+}
+
+function unknownTypeKey(record) {
+  return [record.type, record.payload?.type].filter(Boolean).join(":") || "unknown";
+}
+
+function appendUnknownType(existing = [], type) {
+  if (!type || existing.includes(type)) return existing;
+  return [...existing, type].slice(0, 8);
 }

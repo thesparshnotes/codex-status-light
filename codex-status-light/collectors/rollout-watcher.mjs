@@ -185,11 +185,13 @@ class RolloutWatcher {
   }
 }
 
-function toStoreSession(tracked, status) {
+export function toStoreSession(tracked, status) {
   const sessionId = tracked.state.id;
   const shortId = String(sessionId).slice(0, 8);
   const cwdBase = tracked.state.cwd ? path.basename(tracked.state.cwd) : "Codex";
-  const baseTitle = `${cwdBase} ${shortId}`;
+  const baseTitle = tracked.state.agentNickname
+    ? `${tracked.state.agentNickname} ⤷ ${cwdBase} ${shortId}`
+    : `${cwdBase} ${shortId}`;
   const isQuestion = status === "waiting" && tracked.state.detail === "question";
   const isApproval = status === "waiting" && tracked.state.detail === "approval";
   return {
@@ -206,6 +208,7 @@ function toStoreSession(tracked, status) {
     updatedAt: new Date(tracked.state.lastActivityAt || Date.now()).toISOString(),
     cwd: tracked.state.cwd,
     path: tracked.file,
+    ...(tracked.state.parentThreadId ? { parentId: `rollout:${tracked.state.parentThreadId}` } : {}),
     confidence: isQuestion
       ? "question-heuristic"
       : isApproval

@@ -7,36 +7,74 @@ private let localTimeZone = TimeZone.current
 
 struct UsageSnapshot {
     let fetchedAt: Date
-    let resetCreditsAvailable: Int?
-    let credits: [ResetCreditViewData]
-    let fiveHour: UsageWindowViewData?
-    let weekly: UsageWindowViewData?
+    let providers: [UsageProviderViewData]
+
+    var codex: UsageProviderViewData? {
+        provider("codex")
+    }
+
+    var claude: UsageProviderViewData? {
+        provider("claude")
+    }
+
+    private func provider(_ key: String) -> UsageProviderViewData? {
+        providers.first { $0.key == key }
+    }
 }
 
 struct UsageWindowViewData {
-    let usedPercent: Int?
+    let key: String
+    let label: String
+    let usedPercent: Double?
     let resetAt: Date?
-    let windowSeconds: Int?
 
     var displayPercent: String {
         guard let usedPercent else { return "Unavailable" }
-        return "\(usedPercent)%"
+        return "\(formatPercent(usedPercent))%"
     }
 
     var progressValue: Double {
         guard let usedPercent else { return 0 }
-        return min(max(Double(usedPercent) / 100.0, 0), 1)
+        return min(max(usedPercent / 100.0, 0), 1)
+    }
+}
+
+struct UsageProviderViewData: Identifiable {
+    let id: String
+    let key: String
+    let name: String
+    let ok: Bool?
+    let error: String?
+    let fetchedAt: Date?
+    let plan: String?
+    let windows: [UsageWindowViewData]
+    let resetCreditsAvailable: Int?
+    let resetCredits: [ResetCreditViewData]
+    let extraUsageEnabled: Bool?
+
+    var isAvailable: Bool {
+        ok != false && !windows.isEmpty
+    }
+
+    func window(named key: String) -> UsageWindowViewData? {
+        windows.first { $0.key == key }
+    }
+
+    var primaryWindow: UsageWindowViewData? {
+        window(named: "session") ?? windows.first
+    }
+
+    var weeklyWindow: UsageWindowViewData? {
+        window(named: "weekly") ?? windows.first { $0.key.hasPrefix("weekly") } ?? windows.dropFirst().first
     }
 }
 
 struct ResetCreditViewData: Identifiable {
-    let id = UUID()
+    let id: String
     let title: String
     let status: String
     let grantedAt: Date?
     let expiresAt: Date?
-    let rawGrantedAt: String?
-    let rawExpiresAt: String?
 }
 
 enum StatusLightState: String, Codable {
@@ -117,6 +155,8 @@ struct StatusLightSnapshot {
     let updatedAt: Date?
     let fileURL: URL
     let source: String
+    let daemon: DaemonViewData?
+    let incidents: [String: ProviderIncidentViewData]
 
     var waitingCount: Int { count(.waiting) + count(.error) }
     var runningCount: Int { count(.running) }
@@ -139,7 +179,11 @@ struct StatusLightSnapshot {
     }
 
     static func empty(fileURL: URL) -> StatusLightSnapshot {
-        StatusLightSnapshot(state: .offline, sessions: [], updatedAt: nil, fileURL: fileURL, source: "Source offline")
+        StatusLightSnapshot(state: .offline, sessions: [], updatedAt: nil, fileURL: fileURL, source: "Source offline", daemon: nil, incidents: [:])
+    }
+
+    func incident(for providerKey: String) -> ProviderIncidentViewData? {
+        incidents[providerKey]
     }
 
     private func count(_ state: StatusLightState) -> Int {
@@ -155,11 +199,85 @@ struct StatusLightSession: Identifiable {
     let updatedAt: Date?
 }
 
+struct DaemonViewData {
+    let version: String?
+    let pid: Int?
+    let startedAt: Date?
+    let sourceMtime: Date?
+    let staleCode: Bool
+}
+
+struct ProviderIncidentViewData {
+    let providerKey: String
+    let updatedAt: Date?
+    let ok: Bool?
+    let indicator: String?
+    let description: String?
+    let statusURL: URL?
+    let incidents: [ProviderIncidentItemViewData]
+
+    var isActive: Bool {
+        guard let indicator = indicator?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+              !indicator.isEmpty
+        else {
+            return false
+        }
+        return indicator != "none"
+    }
+
+    var isCritical: Bool {
+        indicator?.lowercased() == "critical"
+    }
+
+    var providerDisplayName: String {
+        switch providerKey {
+        case "codex":
+            return "OpenAI"
+        case "claude":
+            return "Anthropic"
+        default:
+            return providerKey
+                .split(separator: "_")
+                .map { $0.prefix(1).uppercased() + $0.dropFirst() }
+                .joined(separator: " ")
+        }
+    }
+}
+
+struct ProviderIncidentItemViewData: Identifiable {
+    let id: String
+    let name: String
+    let impact: String?
+    let url: URL?
+    let startedAt: Date?
+}
+
 private struct StatusLightFile: Decodable {
     let sessions: [StatusLightFileSession]
     let updatedAt: String?
     let generatedAt: String?
     let summary: StatusLightFileSummary?
+    let daemon: DaemonResponse?
+    let incidents: IncidentsResponse?
+
+    enum CodingKeys: String, CodingKey {
+        case sessions
+        case updatedAt
+        case generatedAt
+        case summary
+        case daemon
+        case incidents
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        sessions = try container.decodeIfPresent([StatusLightFileSession].self, forKey: .sessions) ?? []
+        updatedAt = try container.decodeIfPresent(String.self, forKey: .updatedAt)
+        generatedAt = try container.decodeIfPresent(String.self, forKey: .generatedAt)
+        summary = try container.decodeIfPresent(StatusLightFileSummary.self, forKey: .summary)
+        daemon = try container.decodeIfPresent(DaemonResponse.self, forKey: .daemon)
+        incidents = try container.decodeIfPresent(IncidentsResponse.self, forKey: .incidents)
+    }
 }
 
 private struct StatusLightFileSummary: Decodable {
@@ -172,6 +290,62 @@ private struct StatusLightFileSession: Decodable {
     let status: StatusLightState
     let source: String?
     let updatedAt: String?
+}
+
+private struct DaemonResponse: Decodable {
+    let version: String?
+    let pid: Int?
+    let startedAt: String?
+    let sourceMtime: String?
+    let staleCode: Bool?
+}
+
+private struct IncidentsResponse: Decodable {
+    let updatedAt: String?
+    let providers: [String: ProviderIncidentResponse]
+
+    enum CodingKeys: String, CodingKey {
+        case updatedAt
+        case providers
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        updatedAt = try container.decodeIfPresent(String.self, forKey: .updatedAt)
+        providers = try container.decodeIfPresent([String: ProviderIncidentResponse].self, forKey: .providers) ?? [:]
+    }
+}
+
+private struct ProviderIncidentResponse: Decodable {
+    let ok: Bool?
+    let indicator: String?
+    let description: String?
+    let statusUrl: String?
+    let incidents: [ProviderIncidentItemResponse]
+
+    enum CodingKeys: String, CodingKey {
+        case ok
+        case indicator
+        case description
+        case statusUrl
+        case incidents
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        ok = try container.decodeIfPresent(Bool.self, forKey: .ok)
+        indicator = try container.decodeIfPresent(String.self, forKey: .indicator)
+        description = try container.decodeIfPresent(String.self, forKey: .description)
+        statusUrl = try container.decodeIfPresent(String.self, forKey: .statusUrl)
+        incidents = try container.decodeIfPresent([ProviderIncidentItemResponse].self, forKey: .incidents) ?? []
+    }
+}
+
+private struct ProviderIncidentItemResponse: Decodable {
+    let name: String?
+    let impact: String?
+    let url: String?
+    let startedAt: String?
 }
 
 @MainActor
@@ -304,13 +478,58 @@ enum StatusLightClient {
             )
         }
         let generatedAt = parseDate(file.generatedAt) ?? Date()
+        let incidentUpdatedAt = parseDate(file.incidents?.updatedAt)
+        let incidents = file.incidents?.providers.mapValues { provider in
+            ProviderIncidentViewData(
+                providerKey: "",
+                updatedAt: incidentUpdatedAt,
+                ok: provider.ok,
+                indicator: provider.indicator,
+                description: provider.description,
+                statusURL: provider.statusUrl.flatMap(URL.init(string:)),
+                incidents: provider.incidents.enumerated().compactMap { index, incident in
+                    guard let name = incident.name, !name.isEmpty else { return nil }
+                    return ProviderIncidentItemViewData(
+                        id: "\(index)-\(name)",
+                        name: name,
+                        impact: incident.impact,
+                        url: incident.url.flatMap(URL.init(string:)),
+                        startedAt: parseDate(incident.startedAt)
+                    )
+                }
+            )
+        } ?? [:]
+        let incidentsWithProviderKeys = Dictionary(uniqueKeysWithValues: incidents.map { key, incident in
+            (
+                key,
+                ProviderIncidentViewData(
+                    providerKey: key,
+                    updatedAt: incident.updatedAt,
+                    ok: incident.ok,
+                    indicator: incident.indicator,
+                    description: incident.description,
+                    statusURL: incident.statusURL,
+                    incidents: incident.incidents
+                )
+            )
+        })
 
         return StatusLightSnapshot(
             state: forceOffline ? .offline : (file.summary?.status ?? fallbackState(for: sessions, now: generatedAt)),
             sessions: sessions,
             updatedAt: parseDate(file.updatedAt),
             fileURL: fileURL,
-            source: source
+            source: source,
+            daemon: file.daemon.map {
+                DaemonViewData(
+                    version: $0.version,
+                    pid: $0.pid,
+                    startedAt: parseDate($0.startedAt),
+                    sourceMtime: parseDate($0.sourceMtime),
+                    staleCode: $0.staleCode ?? false
+                )
+            },
+            incidents: forceOffline ? [:] : incidentsWithProviderKeys
         )
     }
 
@@ -405,7 +624,7 @@ final class DashboardViewModel: ObservableObject {
 }
 
 final class CodexUsageClient {
-    private let baseURL = URL(string: "https://chatgpt.com/backend-api/wham")!
+    private let usageURL = URL(string: ProcessInfo.processInfo.environment["CODEX_USAGE_URL"] ?? "http://127.0.0.1:4173/api/usage")!
     private let decoder: JSONDecoder
 
     init() {
@@ -413,66 +632,80 @@ final class CodexUsageClient {
     }
 
     func fetchSnapshot() async throws -> UsageSnapshot {
-        async let usage: UsageResponse = fetch("usage")
-        async let credits: ResetCreditsResponse = fetch("rate-limit-reset-credits")
-
-        let usageResponse = try await usage
-        let creditsResponse = try await credits
-
-        return UsageSnapshot(
-            fetchedAt: Date(),
-            resetCreditsAvailable: creditsResponse.availableCount ?? usageResponse.rateLimitResetCredits?.availableCount,
-            credits: creditsResponse.credits.map {
-                ResetCreditViewData(
-                    title: $0.title ?? "Untitled reset credit",
-                    status: $0.status ?? "unknown",
-                    grantedAt: Self.parseDate($0.grantedAt),
-                    expiresAt: Self.parseDate($0.expiresAt),
-                    rawGrantedAt: $0.grantedAt,
-                    rawExpiresAt: $0.expiresAt
-                )
-            },
-            fiveHour: usageResponse.rateLimit?.primaryWindow.map(Self.windowViewData),
-            weekly: usageResponse.rateLimit?.secondaryWindow.map(Self.windowViewData)
-        )
-    }
-
-    private func fetch<T: Decodable>(_ path: String) async throws -> T {
-        let token = try Self.loadAccessToken()
-        let url = baseURL.appendingPathComponent(path)
-        var request = URLRequest(url: url)
+        var request = URLRequest(url: usageURL)
         request.httpMethod = "GET"
-        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.setValue("CodexUsageDashboard/0.1", forHTTPHeaderField: "User-Agent")
 
         let (data, response) = try await URLSession.shared.data(for: request)
-        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
-            throw DashboardError.requestFailed(http.statusCode)
+        if let http = response as? HTTPURLResponse {
+            if http.statusCode == 404 {
+                throw DashboardError.daemonNeedsUpdate
+            }
+            if !(200..<300).contains(http.statusCode) {
+                throw DashboardError.requestFailed(http.statusCode)
+            }
         }
-        return try decoder.decode(T.self, from: data)
-    }
 
-    private static func loadAccessToken() throws -> String {
-        let authURL = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".codex")
-            .appendingPathComponent("auth.json")
+        let usageResponse = try decoder.decode(UsageDaemonResponse.self, from: data)
+        let providers = usageResponse.providers
+            .map { key, provider in Self.providerViewData(key: key, provider: provider) }
+            .sorted { lhs, rhs in
+                let order = ["codex": 0, "claude": 1]
+                return (order[lhs.key] ?? 100, lhs.name) < (order[rhs.key] ?? 100, rhs.name)
+            }
 
-        let data = try Data(contentsOf: authURL)
-        let auth = try JSONDecoder().decode(AuthFile.self, from: data)
-
-        guard let token = auth.tokens?.accessToken, !token.isEmpty else {
-            throw DashboardError.missingToken
-        }
-        return token
-    }
-
-    private static func windowViewData(_ window: RateLimitWindow) -> UsageWindowViewData {
-        UsageWindowViewData(
-            usedPercent: window.usedPercent,
-            resetAt: window.resetAt.map { Date(timeIntervalSince1970: TimeInterval($0)) },
-            windowSeconds: window.limitWindowSeconds
+        return UsageSnapshot(
+            fetchedAt: Self.parseDate(usageResponse.updatedAt) ?? Date(),
+            providers: providers
         )
+    }
+
+    private static func providerViewData(key: String, provider: UsageProviderResponse) -> UsageProviderViewData {
+        let windows = provider.windows.map {
+            UsageWindowViewData(
+                key: $0.key ?? UUID().uuidString,
+                label: $0.label ?? "Usage",
+                usedPercent: $0.usedPercent,
+                resetAt: parseDate($0.resetsAt)
+            )
+        }
+
+        return UsageProviderViewData(
+            id: key,
+            key: key,
+            name: providerName(for: key),
+            ok: provider.ok,
+            error: provider.error,
+            fetchedAt: parseDate(provider.fetchedAt),
+            plan: provider.plan,
+            windows: windows,
+            resetCreditsAvailable: provider.resetCredits?.available,
+            resetCredits: provider.resetCredits?.credits.enumerated().map { index, credit in
+                ResetCreditViewData(
+                    id: "\(index)-\(credit.title)-\(credit.status)",
+                    title: credit.title,
+                    status: credit.status,
+                    grantedAt: credit.grantedAt,
+                    expiresAt: credit.expiresAt
+                )
+            } ?? [],
+            extraUsageEnabled: provider.extraUsage?.isEnabled
+        )
+    }
+
+    private static func providerName(for key: String) -> String {
+        switch key {
+        case "codex":
+            return "Codex"
+        case "claude":
+            return "Claude"
+        default:
+            return key
+                .split(separator: "_")
+                .map { $0.prefix(1).uppercased() + $0.dropFirst() }
+                .joined(separator: " ")
+        }
     }
 
     private static func parseDate(_ rawValue: String?) -> Date? {
@@ -511,14 +744,14 @@ final class WeeklyLimitNotifier: NSObject, UNUserNotificationCenterDelegate {
     }
 
     func evaluate(_ snapshot: UsageSnapshot) {
-        guard let weekly = snapshot.weekly, let usedPercent = weekly.usedPercent else {
+        guard let weekly = snapshot.codex?.weeklyWindow, let usedPercent = weekly.usedPercent else {
             return
         }
 
         let threshold: Threshold
-        if usedPercent >= criticalThreshold {
+        if usedPercent >= Double(criticalThreshold) {
             threshold = .critical
-        } else if usedPercent >= warningThreshold {
+        } else if usedPercent >= Double(warningThreshold) {
             threshold = .warning
         } else {
             return
@@ -531,8 +764,9 @@ final class WeeklyLimitNotifier: NSObject, UNUserNotificationCenterDelegate {
         }
 
         let identifier = "codex-weekly-limit-\(threshold.rawValue)-\(resetKey)"
+        let roundedPercent = Int(usedPercent.rounded())
         let content = UNMutableNotificationContent()
-        content.title = title(for: threshold, usedPercent: usedPercent)
+        content.title = title(for: threshold, usedPercent: roundedPercent)
         content.body = body(for: threshold, usedPercent: usedPercent, weekly: weekly, snapshot: snapshot)
         content.sound = .default
 
@@ -562,13 +796,13 @@ final class WeeklyLimitNotifier: NSObject, UNUserNotificationCenterDelegate {
 
     private func body(
         for threshold: Threshold,
-        usedPercent: Int,
+        usedPercent: Double,
         weekly: UsageWindowViewData,
         snapshot: UsageSnapshot
     ) -> String {
-        let remainingPercent = max(0, 100 - usedPercent)
+        let remainingPercent = max(0, 100 - Int(usedPercent.rounded()))
         let resetText = weekly.resetAt.map { formatLocal($0) } ?? "the next weekly reset"
-        let creditCount = snapshot.resetCreditsAvailable ?? snapshot.credits.count
+        let creditCount = snapshot.codex?.resetCreditsAvailable ?? 0
         let resetCreditText = resetCreditSummary(creditCount)
 
         switch threshold {
@@ -593,92 +827,130 @@ final class WeeklyLimitNotifier: NSObject, UNUserNotificationCenterDelegate {
 }
 
 enum DashboardError: LocalizedError {
-    case missingToken
+    case daemonNeedsUpdate
     case requestFailed(Int)
 
     var errorDescription: String? {
         switch self {
-        case .missingToken:
-            return "No Codex access token was found in ~/.codex/auth.json."
+        case .daemonNeedsUpdate:
+            return "Daemon needs update — restart it with the new code."
         case .requestFailed(let statusCode):
             return "The usage endpoint returned HTTP \(statusCode)."
         }
     }
 }
 
-struct AuthFile: Decodable {
-    let tokens: AuthTokens?
-}
-
-struct AuthTokens: Decodable {
-    let accessToken: String?
+struct UsageDaemonResponse: Decodable {
+    let updatedAt: String?
+    let providers: [String: UsageProviderResponse]
 
     enum CodingKeys: String, CodingKey {
-        case accessToken = "access_token"
+        case updatedAt
+        case providers
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        updatedAt = try container.decodeIfPresent(String.self, forKey: .updatedAt)
+        providers = try container.decodeIfPresent([String: UsageProviderResponse].self, forKey: .providers) ?? [:]
     }
 }
 
-struct UsageResponse: Decodable {
-    let rateLimit: RateLimit?
-    let rateLimitResetCredits: ResetCreditCount?
+struct UsageProviderResponse: Decodable {
+    let ok: Bool?
+    let error: String?
+    let fetchedAt: String?
+    let plan: String?
+    let windows: [UsageWindowResponse]
+    let resetCredits: ResetCreditsSummary?
+    let extraUsage: ExtraUsageSummary?
 
     enum CodingKeys: String, CodingKey {
-        case rateLimit = "rate_limit"
-        case rateLimitResetCredits = "rate_limit_reset_credits"
+        case ok
+        case error
+        case fetchedAt
+        case plan
+        case windows
+        case resetCredits
+        case extraUsage
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        ok = try container.decodeIfPresent(Bool.self, forKey: .ok)
+        error = try container.decodeIfPresent(String.self, forKey: .error)
+        fetchedAt = try container.decodeIfPresent(String.self, forKey: .fetchedAt)
+        plan = try container.decodeIfPresent(String.self, forKey: .plan)
+        windows = try container.decodeIfPresent([UsageWindowResponse].self, forKey: .windows) ?? []
+        resetCredits = try container.decodeIfPresent(ResetCreditsSummary.self, forKey: .resetCredits)
+        extraUsage = try container.decodeIfPresent(ExtraUsageSummary.self, forKey: .extraUsage)
     }
 }
 
-struct RateLimit: Decodable {
-    let primaryWindow: RateLimitWindow?
-    let secondaryWindow: RateLimitWindow?
-
-    enum CodingKeys: String, CodingKey {
-        case primaryWindow = "primary_window"
-        case secondaryWindow = "secondary_window"
-    }
+struct UsageWindowResponse: Decodable {
+    let key: String?
+    let label: String?
+    let usedPercent: Double?
+    let resetsAt: String?
 }
 
-struct RateLimitWindow: Decodable {
-    let limitWindowSeconds: Int?
-    let resetAt: Int?
-    let usedPercent: Int?
+struct ResetCreditsSummary: Decodable {
+    let available: Int?
+    let credits: [ResetCreditSummary]
 
     enum CodingKeys: String, CodingKey {
-        case limitWindowSeconds = "limit_window_seconds"
-        case resetAt = "reset_at"
-        case usedPercent = "used_percent"
-    }
-}
-
-struct ResetCreditCount: Decodable {
-    let availableCount: Int?
-
-    enum CodingKeys: String, CodingKey {
-        case availableCount = "available_count"
-    }
-}
-
-struct ResetCreditsResponse: Decodable {
-    let availableCount: Int?
-    let credits: [ResetCreditResponse]
-
-    enum CodingKeys: String, CodingKey {
-        case availableCount = "available_count"
+        case available
         case credits
     }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        available = try container.decodeIfPresent(Int.self, forKey: .available)
+        credits = try container.decodeIfPresent([ResetCreditSummary].self, forKey: .credits) ?? []
+    }
 }
 
-struct ResetCreditResponse: Decodable {
-    let title: String?
-    let status: String?
-    let grantedAt: String?
-    let expiresAt: String?
+struct ResetCreditSummary: Decodable {
+    let title: String
+    let status: String
+    let grantedAt: Date?
+    let expiresAt: Date?
 
     enum CodingKeys: String, CodingKey {
         case title
         case status
-        case grantedAt = "granted_at"
-        case expiresAt = "expires_at"
+        case grantedAt
+        case expiresAt
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        title = try container.decodeIfPresent(String.self, forKey: .title) ?? "Reset credit"
+        status = try container.decodeIfPresent(String.self, forKey: .status) ?? "unknown"
+        grantedAt = Self.parseDate(try container.decodeIfPresent(String.self, forKey: .grantedAt))
+        expiresAt = Self.parseDate(try container.decodeIfPresent(String.self, forKey: .expiresAt))
+    }
+
+    private static func parseDate(_ rawValue: String?) -> Date? {
+        guard let rawValue else { return nil }
+
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = fractional.date(from: rawValue) {
+            return date
+        }
+
+        let plain = ISO8601DateFormatter()
+        plain.formatOptions = [.withInternetDateTime]
+        return plain.date(from: rawValue)
+    }
+}
+
+struct ExtraUsageSummary: Decodable {
+    let isEnabled: Bool?
+
+    enum CodingKeys: String, CodingKey {
+        case isEnabled = "is_enabled"
     }
 }
 
@@ -705,9 +977,12 @@ struct DashboardView: View {
                     }
 
                     if let snapshot = viewModel.snapshot {
-                        UsageWindowCard(title: "5-hour usage", window: snapshot.fiveHour)
-                        UsageWindowCard(title: "Weekly usage", window: snapshot.weekly)
-                        ResetCreditsCard(snapshot: snapshot)
+                        ForEach(snapshot.providers) { provider in
+                            UsageProviderSection(
+                                provider: provider,
+                                incident: statusViewModel.snapshot.incident(for: provider.key)
+                            )
+                        }
 
                         Text("Usage updated \(formatLocal(snapshot.fetchedAt))")
                             .font(.caption)
@@ -768,6 +1043,106 @@ struct DashboardView: View {
     }
 }
 
+struct UsageProviderSection: View {
+    let provider: UsageProviderViewData
+    let incident: ProviderIncidentViewData?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            if let incident, incident.isActive {
+                ProviderIncidentBanner(incident: incident)
+            }
+
+            HStack(alignment: .firstTextBaseline) {
+                Text(provider.name)
+                    .font(.headline)
+                if let plan = provider.plan, !plan.isEmpty {
+                    Text(plan.uppercased())
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                if let fetchedAt = provider.fetchedAt {
+                    Text(formatLocal(fetchedAt))
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            if provider.ok == false {
+                Text(provider.error ?? "Provider usage unavailable.")
+                    .font(.callout)
+                    .foregroundStyle(.red)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if provider.windows.isEmpty {
+                Text("No usage windows returned.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(provider.windows, id: \.key) { window in
+                    UsageWindowCard(title: window.label, window: window)
+                }
+            }
+
+            if let resetCredits = provider.resetCreditsAvailable {
+                ResetCreditsCard(available: resetCredits, credits: provider.resetCredits)
+            }
+        }
+        .padding(12)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+    }
+}
+
+struct ProviderIncidentBanner: View {
+    let incident: ProviderIncidentViewData
+
+    var body: some View {
+        Button {
+            if let statusURL = incident.statusURL {
+                NSWorkspace.shared.open(statusURL)
+            }
+        } label: {
+            VStack(alignment: .leading, spacing: 5) {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Text("⚠")
+                    Text("\(incident.providerDisplayName) incident: \(incident.description ?? "Status incident reported.")")
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 0)
+                }
+                .font(.caption.weight(.semibold))
+
+                if !incident.incidents.isEmpty {
+                    VStack(alignment: .leading, spacing: 2) {
+                        ForEach(incident.incidents) { item in
+                            Text(item.name)
+                                .lineLimit(2)
+                        }
+                    }
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                }
+            }
+            .foregroundStyle(foregroundColor)
+            .padding(9)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(backgroundColor, in: RoundedRectangle(cornerRadius: 8))
+            .contentShape(RoundedRectangle(cornerRadius: 8))
+        }
+        .buttonStyle(.plain)
+        .help(incident.statusURL?.absoluteString ?? "")
+    }
+
+    private var backgroundColor: Color {
+        incident.isCritical ? Color.red.opacity(0.16) : Color.orange.opacity(0.18)
+    }
+
+    private var foregroundColor: Color {
+        incident.isCritical ? .red : .orange
+    }
+}
+
 struct StatusLightCard: View {
     @ObservedObject var viewModel: StatusLightViewModel
 
@@ -795,6 +1170,19 @@ struct StatusLightCard: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if viewModel.snapshot.daemon?.staleCode == true {
+                HStack(spacing: 8) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                    Text("⚠ Daemon is running outdated code — restart it")
+                        .font(.callout.weight(.semibold))
+                        .foregroundStyle(.orange)
+                }
+                .padding(8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
             }
 
             if viewModel.snapshot.sessions.isEmpty {
@@ -852,19 +1240,21 @@ struct UsageWindowCard: View {
             ProgressView(value: window?.progressValue ?? 0)
                 .tint(percentColor)
 
-            Text(resetText)
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            TimelineView(.periodic(from: Date(), by: 60)) { context in
+                Text(resetText(now: context.date))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
         .padding(12)
         .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
     }
 
-    private var resetText: String {
+    private func resetText(now: Date) -> String {
         guard let resetAt = window?.resetAt else {
             return "Reset time unavailable"
         }
-        return "Resets \(formatLocal(resetAt))"
+        return "Resets \(formatLocal(resetAt)) \(formatRelativeReset(from: now, to: resetAt))"
     }
 
     private var percentColor: Color {
@@ -881,30 +1271,50 @@ struct UsageWindowCard: View {
 }
 
 struct ResetCreditsCard: View {
-    let snapshot: UsageSnapshot
+    let available: Int
+    let credits: [ResetCreditViewData]
+    @State private var isExpanded = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .firstTextBaseline) {
-                Text("Reset credits")
-                    .font(.headline)
-                Spacer()
-                Text("\(snapshot.resetCreditsAvailable ?? snapshot.credits.count)")
-                    .font(.headline.monospacedDigit())
-            }
-
-            if snapshot.credits.isEmpty {
-                Text("No available reset credits returned.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+            if credits.isEmpty {
+                countRow
             } else {
-                ForEach(snapshot.credits) { credit in
-                    ResetCreditRow(credit: credit)
+                DisclosureGroup(isExpanded: $isExpanded) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        ForEach(credits) { credit in
+                            ResetCreditRow(credit: credit)
+                        }
+                    }
+                    .padding(.top, 4)
+                } label: {
+                    countRow
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            withAnimation {
+                                isExpanded.toggle()
+                            }
+                        }
                 }
             }
+
+            Text(available == 1 ? "1 reset credit available." : "\(available) reset credits available.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
         .padding(12)
         .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    private var countRow: some View {
+        HStack(alignment: .firstTextBaseline) {
+            Text("Reset credits")
+                .font(.headline)
+            Spacer()
+            Text("\(available)")
+                .font(.headline.monospacedDigit())
+        }
+        .contentShape(Rectangle())
     }
 }
 
@@ -912,35 +1322,35 @@ struct ResetCreditRow: View {
     let credit: ResetCreditViewData
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(alignment: .firstTextBaseline) {
                 Text(credit.title)
-                    .font(.subheadline.weight(.medium))
+                    .font(.caption.weight(.semibold))
                 Spacer()
                 Text(credit.status)
-                    .font(.caption)
+                    .font(.caption.monospacedDigit())
                     .foregroundStyle(.secondary)
             }
 
-            Text("Granted \(formatLocalOptional(credit.grantedAt))")
+            Text("Granted \(formatLocalOptional(credit.grantedAt)) · Expires \(formatLocalOptional(credit.expiresAt))")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
-            Text("Expires \(formatLocalOptional(credit.expiresAt))")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-
-            Text("UTC \(credit.rawGrantedAt ?? "unavailable") -> \(credit.rawExpiresAt ?? "unavailable")")
-                .font(.caption2.monospaced())
-                .foregroundStyle(.secondary)
-                .textSelection(.enabled)
         }
-        .padding(.top, 2)
+        .padding(.leading, 2)
     }
 }
 
 func formatLocalOptional(_ date: Date?) -> String {
     guard let date else { return "unavailable" }
     return formatLocal(date)
+}
+
+func formatPercent(_ value: Double) -> String {
+    let rounded = value.rounded()
+    if abs(value - rounded) < 0.05 {
+        return "\(Int(rounded))"
+    }
+    return String(format: "%.1f", value)
 }
 
 func formatLocal(_ date: Date) -> String {
@@ -951,25 +1361,65 @@ func formatLocal(_ date: Date) -> String {
     return formatter.string(from: date)
 }
 
+func formatRelativeReset(from now: Date, to resetAt: Date) -> String {
+    let remainingSeconds = resetAt.timeIntervalSince(now)
+    guard remainingSeconds > 0 else {
+        return "(now)"
+    }
+
+    let totalMinutes = max(0, Int(ceil(remainingSeconds / 60)))
+    let days = totalMinutes / (24 * 60)
+    let hours = (totalMinutes % (24 * 60)) / 60
+    let minutes = totalMinutes % 60
+
+    if days >= 1 {
+        return "(in \(days)d \(hours)h)"
+    }
+    if hours >= 1 {
+        return "(in \(hours)h \(minutes)m)"
+    }
+    return "(in \(minutes)m)"
+}
+
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    private struct StatusPillProviderItem {
+        let key: String
+        let logo: NSImage
+        let text: String
+        let incidentIndicator: String?
+    }
+
     private var statusItem: NSStatusItem?
     private var popover: NSPopover?
     private let viewModel = DashboardViewModel()
     private let statusViewModel = StatusLightViewModel()
     private let weeklyLimitNotifier = WeeklyLimitNotifier()
+    private lazy var providerLogos: [String: NSImage] = Self.loadProviderLogos()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
         weeklyLimitNotifier.requestAuthorization()
 
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        item.button?.image = statusIcon(for: .idle)
-        item.button?.imagePosition = .imageLeft
-        item.button?.title = " Codex"
+        item.button?.imagePosition = .imageOnly
+        item.button?.title = ""
         item.button?.target = self
         item.button?.action = #selector(togglePopover(_:))
         statusItem = item
+
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(appearanceDidChange(_:)),
+            name: NSApplication.didChangeScreenParametersNotification,
+            object: nil
+        )
+        DistributedNotificationCenter.default().addObserver(
+            self,
+            selector: #selector(appearanceDidChange(_:)),
+            name: NSNotification.Name("AppleInterfaceThemeChangedNotification"),
+            object: nil
+        )
 
         let popover = NSPopover()
         popover.behavior = .transient
@@ -1005,53 +1455,199 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func updateStatusItem() {
-        let usageText: String
-        if let snapshot = viewModel.snapshot {
-            let fiveHour = snapshot.fiveHour?.usedPercent.map { "\($0)%" } ?? "-"
-            let weekly = snapshot.weekly?.usedPercent.map { "\($0)%" } ?? "-"
-            usageText = "\(fiveHour)/\(weekly)"
-        } else {
-            usageText = "Codex"
-        }
-
-        let state = statusViewModel.snapshot.state
-        statusItem?.button?.image = statusIcon(for: state)
-        statusItem?.button?.title = " \(usageText)"
-        statusItem?.button?.toolTip = "\(state.menuTitle) · \(statusViewModel.snapshot.summary)"
+    @objc private func appearanceDidChange(_ notification: Notification) {
+        updateStatusItem()
     }
 
-    private func statusIcon(for state: StatusLightState) -> NSImage {
-        let size = NSSize(width: 18, height: 18)
-        let image = NSImage(size: size)
-        image.lockFocus()
+    private func updateStatusItem() {
+        guard let button = statusItem?.button else { return }
+        let state = statusViewModel.snapshot.state
+        button.image = Self.statusPillImage(
+            state: state,
+            providers: statusPillProviders(),
+            appearance: button.effectiveAppearance
+        )
+        button.imagePosition = .imageOnly
+        button.title = ""
+        button.toolTip = "\(state.menuTitle) · \(statusViewModel.snapshot.summary)"
+    }
 
-        let rect = NSRect(x: 2, y: 2, width: 14, height: 14)
-        state.nsColor.setFill()
-        NSBezierPath(ovalIn: rect).fill()
+    private func statusPillProviders() -> [StatusPillProviderItem] {
+        guard let snapshot = viewModel.snapshot else { return [] }
+        return ["codex", "claude"].compactMap { key in
+            let provider: UsageProviderViewData?
+            switch key {
+            case "codex":
+                provider = snapshot.codex
+            case "claude":
+                provider = snapshot.claude
+            default:
+                provider = nil
+            }
 
-        NSColor.black.withAlphaComponent(0.18).setStroke()
-        let outline = NSBezierPath(ovalIn: rect)
-        outline.lineWidth = 1
-        outline.stroke()
+            guard let provider, provider.isAvailable, let logo = providerLogos[key] else {
+                return nil
+            }
 
-        image.unlockFocus()
+            let incident = statusViewModel.snapshot.incident(for: key)
+            return StatusPillProviderItem(
+                key: key,
+                logo: logo,
+                text: Self.compactUsagePair(provider: provider),
+                incidentIndicator: incident?.isActive == true ? incident?.indicator?.lowercased() : nil
+            )
+        }
+    }
+
+    private static func compactUsagePair(provider: UsageProviderViewData) -> String {
+        let primary = provider.primaryWindow?.usedPercent.map(formatPercent) ?? "-"
+        let weekly = provider.weeklyWindow?.usedPercent.map(formatPercent) ?? "-"
+        return "\(primary)/\(weekly)"
+    }
+
+    private static func statusPillImage(
+        state: StatusLightState,
+        providers: [StatusPillProviderItem],
+        appearance: NSAppearance
+    ) -> NSImage {
+        let height: CGFloat = 18
+        let logoSize: CGFloat = 13
+        let horizontalPadding: CGFloat = 7
+        let logoTextSpacing: CGFloat = 4.5
+        let providerSpacing: CGFloat = 7
+        let font = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .medium)
+        let textColor = adaptiveMenuBarTextColor(for: appearance)
+        let textAttributes: [NSAttributedString.Key: Any] = [
+            .font: font,
+            .foregroundColor: textColor
+        ]
+
+        let textSizes = providers.map { provider in
+            (provider.text as NSString).size(withAttributes: textAttributes)
+        }
+        let contentWidth = zip(providers, textSizes).reduce(CGFloat(0)) { width, pair in
+            let providerWidth = logoSize + logoTextSpacing + ceil(pair.1.width)
+            return width + providerWidth
+        } + CGFloat(max(0, providers.count - 1)) * providerSpacing
+        let width = max(26, horizontalPadding * 2 + contentWidth)
+        let size = NSSize(width: width, height: height)
+
+        let image = NSImage(size: size, flipped: false) { rect in
+            let pillRect = rect.insetBy(dx: 0.5, dy: 0.5)
+            let pillPath = NSBezierPath(roundedRect: pillRect, xRadius: height / 2, yRadius: height / 2)
+            state.nsColor.withAlphaComponent(0.28).setFill()
+            pillPath.fill()
+            textColor.withAlphaComponent(0.10).setStroke()
+            pillPath.lineWidth = 1
+            pillPath.stroke()
+
+            var x = horizontalPadding
+            for (index, provider) in providers.enumerated() {
+                let logoRect = NSRect(x: x, y: (height - logoSize) / 2, width: logoSize, height: logoSize)
+                drawTintedLogo(provider.logo, in: logoRect, color: textColor)
+                if let indicator = provider.incidentIndicator {
+                    drawIncidentBadge(indicator: indicator, logoRect: logoRect)
+                }
+
+                x += logoSize + logoTextSpacing
+                let textSize = textSizes[index]
+                let textRect = NSRect(
+                    x: x,
+                    y: (height - textSize.height) / 2 - 0.3,
+                    width: ceil(textSize.width),
+                    height: textSize.height
+                )
+                (provider.text as NSString).draw(in: textRect, withAttributes: textAttributes)
+                x += ceil(textSize.width) + providerSpacing
+            }
+
+            return true
+        }
         image.isTemplate = false
-        image.accessibilityDescription = "Codex status: \(state.title)"
+        image.accessibilityDescription = "Codex usage status: \(state.title)"
         return image
+    }
+
+    private static func loadProviderLogos() -> [String: NSImage] {
+        ["codex", "claude"].reduce(into: [:]) { result, key in
+            guard let url = Bundle.module.url(forResource: "ProviderIcon-\(key)", withExtension: "svg"),
+                  let image = NSImage(contentsOf: url)
+            else {
+                return
+            }
+            image.isTemplate = false
+            result[key] = image
+        }
+    }
+
+    private static func adaptiveMenuBarTextColor(for appearance: NSAppearance) -> NSColor {
+        let darkAppearances: [NSAppearance.Name] = [
+            .darkAqua,
+            .vibrantDark,
+            .accessibilityHighContrastDarkAqua,
+            .accessibilityHighContrastVibrantDark
+        ]
+        let lightAppearances: [NSAppearance.Name] = [
+            .aqua,
+            .vibrantLight,
+            .accessibilityHighContrastAqua,
+            .accessibilityHighContrastVibrantLight
+        ]
+        let match = appearance.bestMatch(from: darkAppearances + lightAppearances)
+        return darkAppearances.contains(match ?? .aqua) ? .white : .black
+    }
+
+    private static func drawTintedLogo(_ logo: NSImage, in rect: NSRect, color: NSColor) {
+        NSGraphicsContext.saveGraphicsState()
+        logo.draw(
+            in: rect,
+            from: .zero,
+            operation: .sourceOver,
+            fraction: 1,
+            respectFlipped: true,
+            hints: [.interpolation: NSImageInterpolation.high]
+        )
+        color.setFill()
+        rect.fill(using: .sourceAtop)
+        NSGraphicsContext.restoreGraphicsState()
+    }
+
+    private static func drawIncidentBadge(indicator: String, logoRect: NSRect) {
+        let badgeSize: CGFloat = 6.8
+        let badgeRect = NSRect(
+            x: logoRect.maxX - badgeSize + 1.4,
+            y: logoRect.minY - 1.3,
+            width: badgeSize,
+            height: badgeSize
+        )
+        let badgeColor: NSColor = indicator == "critical" ? .systemRed : .systemOrange
+        badgeColor.setFill()
+        NSBezierPath(ovalIn: badgeRect).fill()
+
+        NSColor.white.setFill()
+        let font = NSFont.systemFont(ofSize: 5.4, weight: .black)
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: font,
+            .foregroundColor: NSColor.white
+        ]
+        let mark = "!" as NSString
+        let size = mark.size(withAttributes: attributes)
+        mark.draw(
+            at: NSPoint(
+                x: badgeRect.midX - size.width / 2,
+                y: badgeRect.midY - size.height / 2 - 0.2
+            ),
+            withAttributes: attributes
+        )
     }
 }
 
-@main
-struct CodexUsageStatusDashboardApp {
-    @MainActor private static var delegate: AppDelegate?
+private var retainedAppDelegate: AppDelegate?
 
-    @MainActor
-    static func main() {
-        let app = NSApplication.shared
-        let appDelegate = AppDelegate()
-        delegate = appDelegate
-        app.delegate = appDelegate
-        app.run()
-    }
+MainActor.assumeIsolated {
+    let app = NSApplication.shared
+    let appDelegate = AppDelegate()
+    retainedAppDelegate = appDelegate
+    app.delegate = appDelegate
+    app.run()
 }

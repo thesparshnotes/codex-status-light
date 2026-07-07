@@ -43,7 +43,8 @@ export async function updateSession(file, nextSession) {
     cwd: nextSession.cwd || current?.cwd,
     path: nextSession.path || current?.path,
     lastRecordType: nextSession.lastRecordType || current?.lastRecordType,
-    confidence: nextSession.confidence || current?.confidence,
+    parentId: nextSession.parentId,
+    confidence: nextSession.confidence,
     detail: nextSession.detail,
   };
 
@@ -155,6 +156,7 @@ function normalizeState(state) {
         updatedAt: String(session.updatedAt || new Date(0).toISOString()),
         ...(session.cwd ? { cwd: String(session.cwd) } : {}),
         ...(session.path ? { path: String(session.path) } : {}),
+        ...(session.parentId ? { parentId: String(session.parentId) } : {}),
         ...(session.lastRecordType ? { lastRecordType: String(session.lastRecordType) } : {}),
         ...(session.confidence ? { confidence: String(session.confidence) } : {}),
         ...(session.detail ? { detail: String(session.detail) } : {}),
