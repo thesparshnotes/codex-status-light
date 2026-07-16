@@ -4,6 +4,14 @@ import { fileURLToPath } from "node:url";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
+import {
+  computeProjection,
+  defaultHistoryFile,
+  pruneHistory,
+  readSamples,
+  recordSample,
+} from "./usage-history.mjs";
+import { computeStrategy, createStrategyPhraser } from "./strategy.mjs";
 
 const execFileAsync = promisify(execFile);
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -17,6 +25,7 @@ const CLAUDE_CREDENTIALS_SERVICE = "Claude Code-credentials";
 const CLAUDE_CREDENTIALS_ACCOUNT = safeUsername();
 const CLAUDE_TOKEN_EXPIRY_MARGIN_MS = 60_000;
 const CLAUDE_REFRESH_COOLDOWN_MS = 15_000;
+const HISTORY_PRUNE_INTERVAL_MS = 86_400_000;
 
 const defaultClaudeRefreshState = createClaudeRefreshState();
 
@@ -213,6 +222,7 @@ export function startUsageCollector({
   fetchClaude = (options) => fetchClaudeUsage(options),
   codexOptions = {},
   claudeOptions = {},
+  historyFile = defaultHistoryFile,
   startImmediately = true,
 } = {}) {
   const collector = new UsageCollector({
@@ -223,6 +233,7 @@ export function startUsageCollector({
     fetchClaude,
     codexOptions,
     claudeOptions,
+    historyFile,
   });
   collector.start({ startImmediately });
   return {
@@ -233,7 +244,7 @@ export function startUsageCollector({
 }
 
 class UsageCollector {
-  constructor({ intervalMs, onUpdate, fetchImpl, fetchCodex, fetchClaude, codexOptions, claudeOptions }) {
+  constructor({ intervalMs, onUpdate, fetchImpl, fetchCodex, fetchClaude, codexOptions, claudeOptions, historyFile }) {
     this.intervalMs = intervalMs;
     this.onUpdate = onUpdate;
     this.fetchImpl = fetchImpl;
@@ -241,9 +252,13 @@ class UsageCollector {
     this.fetchClaude = fetchClaude;
     this.codexOptions = codexOptions;
     this.claudeOptions = claudeOptions;
+    this.historyFile = historyFile;
+    this.historyPrune = null;
+    this.lastHistoryPruneMs = 0;
     this.timer = null;
     this.closed = false;
     this.snapshot = null;
+    this.strategyPhraser = createStrategyPhraser({ fetchImpl });
     this.providers = {
       codex: null,
       claude: null,
@@ -270,6 +285,7 @@ class UsageCollector {
 
   async refresh() {
     if (this.closed) return;
+    await this.initHistory();
     await Promise.all([
       this.refreshProvider("codex", this.fetchCodex, this.codexOptions),
       this.refreshProvider("claude", this.fetchClaude, this.claudeOptions),
@@ -283,7 +299,14 @@ class UsageCollector {
 
     try {
       const provider = await fetchProvider({ ...options, fetchImpl: this.fetchImpl });
-      this.providers[name] = normalizeSuccessProvider(provider);
+      const normalized = normalizeSuccessProvider(provider);
+      await recordSample({
+        historyFile: this.historyFile,
+        provider: name,
+        windows: normalized.windows,
+        nowMs: now,
+      });
+      this.providers[name] = await this.withProjection(name, normalized);
       this.backoffUntil[name] = 0;
     } catch (error) {
       if (error instanceof HttpError && error.status === 429) {
@@ -296,14 +319,83 @@ class UsageCollector {
 
   publish() {
     if (this.closed) return;
+    const providers = {
+      codex: this.providers.codex ?? errorProvider(null, new Error("No Codex usage snapshot yet")),
+      claude: this.providers.claude ?? errorProvider(null, new Error("No Claude usage snapshot yet")),
+    };
+    const strategy = computeStrategy({
+      codex: providers.codex,
+      claude: providers.claude,
+      nowMs: Date.now(),
+    });
     this.snapshot = {
       updatedAt: new Date().toISOString(),
-      providers: {
-        codex: this.providers.codex ?? errorProvider(null, new Error("No Codex usage snapshot yet")),
-        claude: this.providers.claude ?? errorProvider(null, new Error("No Claude usage snapshot yet")),
-      },
+      providers,
+      strategy,
     };
     this.onUpdate?.(this.snapshot);
+    this.strategyPhraser.maybeRephrase(strategy, {
+      currentFactsHash: () => this.snapshot?.strategy?.factsHash ?? null,
+      apply: (phrased) => {
+        if (this.closed || !this.snapshot?.strategy) return;
+        this.snapshot = {
+          ...this.snapshot,
+          strategy: {
+            ...this.snapshot.strategy,
+            advice: phrased.advice,
+            source: phrased.source,
+          },
+          updatedAt: new Date().toISOString(),
+        };
+        this.onUpdate?.(this.snapshot);
+      },
+    }).catch(() => {});
+  }
+
+  async initHistory() {
+    const nowMs = Date.now();
+    if (
+      !this.historyPrune
+      || nowMs - this.lastHistoryPruneMs >= HISTORY_PRUNE_INTERVAL_MS
+      || nowMs < this.lastHistoryPruneMs
+    ) {
+      this.lastHistoryPruneMs = nowMs;
+      this.historyPrune = pruneHistory({
+        historyFile: this.historyFile,
+        nowMs,
+      }).catch(() => {});
+    }
+    await this.historyPrune;
+  }
+
+  async withProjection(name, provider) {
+    const samples = await readSamples({ historyFile: this.historyFile }).catch(() => []);
+    const nowMs = Date.now();
+    let primaryProjection = null;
+    const projectedWindows = provider.windows.map((window) => {
+      if (!isWeeklyFamilyWindow(window)) return window;
+      const projection = computeProjection({
+        windows: provider.windows,
+        samples,
+        provider: name,
+        nowMs,
+        windowKey: window.key,
+      });
+      if (window.key === "weekly" && primaryProjection === null) primaryProjection = projection;
+      return { ...window, projection };
+    });
+    const resetCredits = normalizeResetCredits(provider.resetCredits);
+
+    return {
+      ...provider,
+      windows: projectedWindows,
+      projection: primaryProjection,
+      resetCredits: {
+        ...resetCredits,
+        advice: null,
+        adviceKind: null,
+      },
+    };
   }
 }
 
@@ -314,6 +406,8 @@ function normalizeSuccessProvider(provider) {
     error: null,
     fetchedAt: validIsoOrNow(provider?.fetchedAt),
     windows: Array.isArray(provider?.windows) ? provider.windows : [],
+    projection: provider?.projection ?? null,
+    resetCredits: normalizeResetCredits(provider?.resetCredits),
   };
 }
 
@@ -324,7 +418,23 @@ function errorProvider(previous, error) {
     error: error instanceof Error ? error.message : String(error),
     fetchedAt: previous?.fetchedAt ?? null,
     windows: Array.isArray(previous?.windows) ? previous.windows : [],
+    projection: previous?.projection ?? null,
+    resetCredits: normalizeResetCredits(previous?.resetCredits),
   };
+}
+
+function normalizeResetCredits(resetCredits) {
+  const credits = Array.isArray(resetCredits?.credits) ? resetCredits.credits : [];
+  return {
+    available: numberOrNull(resetCredits?.available) ?? 0,
+    credits,
+    advice: null,
+    adviceKind: null,
+  };
+}
+
+function isWeeklyFamilyWindow(window) {
+  return window?.key === "weekly" || (typeof window?.key === "string" && window.key.startsWith("weekly_scoped:"));
 }
 
 async function fetchJson(url, { headers, fetchImpl }) {

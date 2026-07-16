@@ -8,6 +8,7 @@ private let localTimeZone = TimeZone.current
 struct UsageSnapshot {
     let fetchedAt: Date
     let providers: [UsageProviderViewData]
+    let strategy: UsageStrategyViewData?
 
     var codex: UsageProviderViewData? {
         provider("codex")
@@ -27,6 +28,7 @@ struct UsageWindowViewData {
     let label: String
     let usedPercent: Double?
     let resetAt: Date?
+    let projection: UsageProjectionViewData?
 
     var displayPercent: String {
         guard let usedPercent else { return "Unavailable" }
@@ -50,6 +52,7 @@ struct UsageProviderViewData: Identifiable {
     let windows: [UsageWindowViewData]
     let resetCreditsAvailable: Int?
     let resetCredits: [ResetCreditViewData]
+    let projection: UsageProjectionViewData?
     let extraUsageEnabled: Bool?
 
     var isAvailable: Bool {
@@ -66,6 +69,45 @@ struct UsageProviderViewData: Identifiable {
 
     var weeklyWindow: UsageWindowViewData? {
         window(named: "weekly") ?? windows.first { $0.key.hasPrefix("weekly") }
+    }
+}
+
+struct UsageProjectionViewData {
+    let windowKey: String
+    let status: String
+    let summary: String
+
+    var tint: Color {
+        switch status {
+        case "safe":
+            return .green
+        case "warning":
+            return .orange
+        case "critical":
+            return .red
+        default:
+            return .secondary
+        }
+    }
+}
+
+struct UsageStrategyViewData {
+    let advice: String
+    let urgency: String?
+    let secondary: UsageStrategySecondaryViewData?
+
+    var tint: Color {
+        urgency == "act" ? .orange : .secondary
+    }
+}
+
+struct UsageStrategySecondaryViewData {
+    let state: String
+    let advice: String
+    let urgency: String?
+
+    var tint: Color {
+        urgency == "act" ? .orange : .secondary
     }
 }
 
@@ -657,17 +699,46 @@ final class CodexUsageClient {
 
         return UsageSnapshot(
             fetchedAt: Self.parseDate(usageResponse.updatedAt) ?? Date(),
-            providers: providers
+            providers: providers,
+            strategy: usageResponse.strategy.flatMap { strategy in
+                guard let advice = Self.nonEmpty(strategy.advice) else { return nil }
+                let secondary = strategy.secondary.flatMap { secondary -> UsageStrategySecondaryViewData? in
+                    guard let state = Self.nonEmpty(secondary.state),
+                          let advice = Self.nonEmpty(secondary.advice)
+                    else {
+                        return nil
+                    }
+                    return UsageStrategySecondaryViewData(
+                        state: state,
+                        advice: advice,
+                        urgency: secondary.urgency
+                    )
+                }
+                return UsageStrategyViewData(advice: advice, urgency: strategy.urgency, secondary: secondary)
+            }
         )
     }
 
     private static func providerViewData(key: String, provider: UsageProviderResponse) -> UsageProviderViewData {
+        let providerProjection = projectionViewData(provider.projection, defaultWindowKey: "weekly")
         let windows = provider.windows.map {
-            UsageWindowViewData(
-                key: $0.key ?? UUID().uuidString,
+            let key = $0.key ?? UUID().uuidString
+            let windowProjection = projectionViewData($0.projection, defaultWindowKey: key)
+            let effectiveProjection: UsageProjectionViewData?
+            if $0.hasProjectionKey {
+                effectiveProjection = windowProjection
+            } else if key == "weekly" {
+                effectiveProjection = providerProjection
+            } else {
+                effectiveProjection = nil
+            }
+
+            return UsageWindowViewData(
+                key: key,
                 label: $0.label ?? "Usage",
                 usedPercent: $0.usedPercent,
-                resetAt: parseDate($0.resetsAt)
+                resetAt: parseDate($0.resetsAt),
+                projection: effectiveProjection
             )
         }
 
@@ -690,8 +761,28 @@ final class CodexUsageClient {
                     expiresAt: credit.expiresAt
                 )
             } ?? [],
+            projection: providerProjection,
             extraUsageEnabled: provider.extraUsage?.isEnabled
         )
+    }
+
+    private static func projectionViewData(
+        _ projection: UsageProjectionResponse?,
+        defaultWindowKey: String
+    ) -> UsageProjectionViewData? {
+        guard let projection, let summary = nonEmpty(projection.summary) else { return nil }
+        return UsageProjectionViewData(
+            windowKey: projection.windowKey ?? defaultWindowKey,
+            status: projection.status ?? "collecting",
+            summary: summary
+        )
+    }
+
+    private static func nonEmpty(_ value: String?) -> String? {
+        guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty else {
+            return nil
+        }
+        return trimmed
     }
 
     private static func providerName(for key: String) -> String {
@@ -843,16 +934,69 @@ enum DashboardError: LocalizedError {
 struct UsageDaemonResponse: Decodable {
     let updatedAt: String?
     let providers: [String: UsageProviderResponse]
+    let strategy: UsageStrategyResponse?
 
     enum CodingKeys: String, CodingKey {
         case updatedAt
         case providers
+        case strategy
     }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         updatedAt = try container.decodeIfPresent(String.self, forKey: .updatedAt)
         providers = try container.decodeIfPresent([String: UsageProviderResponse].self, forKey: .providers) ?? [:]
+        strategy = try container.decodeIfPresent(UsageStrategyResponse.self, forKey: .strategy)
+    }
+}
+
+struct UsageStrategyResponse: Decodable {
+    let state: String?
+    let urgency: String?
+    let advice: String?
+    let source: String?
+    let generatedAt: String?
+    let secondary: UsageStrategySecondaryResponse?
+
+    enum CodingKeys: String, CodingKey {
+        case state
+        case urgency
+        case advice
+        case source
+        case generatedAt
+        case secondary
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        state = try container.decodeIfPresent(String.self, forKey: .state)
+        urgency = try container.decodeIfPresent(String.self, forKey: .urgency)
+        advice = try container.decodeIfPresent(String.self, forKey: .advice)
+        source = try container.decodeIfPresent(String.self, forKey: .source)
+        generatedAt = try container.decodeIfPresent(String.self, forKey: .generatedAt)
+        secondary = try container.decodeIfPresent(UsageStrategySecondaryResponse.self, forKey: .secondary)
+    }
+}
+
+struct UsageStrategySecondaryResponse: Decodable {
+    let state: String?
+    let urgency: String?
+    let advice: String?
+    let source: String?
+
+    enum CodingKeys: String, CodingKey {
+        case state
+        case urgency
+        case advice
+        case source
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        state = try container.decodeIfPresent(String.self, forKey: .state)
+        urgency = try container.decodeIfPresent(String.self, forKey: .urgency)
+        advice = try container.decodeIfPresent(String.self, forKey: .advice)
+        source = try container.decodeIfPresent(String.self, forKey: .source)
     }
 }
 
@@ -863,6 +1007,7 @@ struct UsageProviderResponse: Decodable {
     let plan: String?
     let windows: [UsageWindowResponse]
     let resetCredits: ResetCreditsSummary?
+    let projection: UsageProjectionResponse?
     let extraUsage: ExtraUsageSummary?
 
     enum CodingKeys: String, CodingKey {
@@ -872,6 +1017,7 @@ struct UsageProviderResponse: Decodable {
         case plan
         case windows
         case resetCredits
+        case projection
         case extraUsage
     }
 
@@ -883,6 +1029,7 @@ struct UsageProviderResponse: Decodable {
         plan = try container.decodeIfPresent(String.self, forKey: .plan)
         windows = try container.decodeIfPresent([UsageWindowResponse].self, forKey: .windows) ?? []
         resetCredits = try container.decodeIfPresent(ResetCreditsSummary.self, forKey: .resetCredits)
+        projection = try container.decodeIfPresent(UsageProjectionResponse.self, forKey: .projection)
         extraUsage = try container.decodeIfPresent(ExtraUsageSummary.self, forKey: .extraUsage)
     }
 }
@@ -892,21 +1039,91 @@ struct UsageWindowResponse: Decodable {
     let label: String?
     let usedPercent: Double?
     let resetsAt: String?
+    let projection: UsageProjectionResponse?
+    let hasProjectionKey: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case key
+        case label
+        case usedPercent
+        case resetsAt
+        case projection
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        key = try container.decodeIfPresent(String.self, forKey: .key)
+        label = try container.decodeIfPresent(String.self, forKey: .label)
+        usedPercent = try container.decodeIfPresent(Double.self, forKey: .usedPercent)
+        resetsAt = try container.decodeIfPresent(String.self, forKey: .resetsAt)
+        projection = try container.decodeIfPresent(UsageProjectionResponse.self, forKey: .projection)
+        hasProjectionKey = container.contains(.projection)
+    }
 }
 
 struct ResetCreditsSummary: Decodable {
     let available: Int?
     let credits: [ResetCreditSummary]
+    let advice: String?
+    let adviceKind: String?
 
     enum CodingKeys: String, CodingKey {
         case available
         case credits
+        case advice
+        case adviceKind
     }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         available = try container.decodeIfPresent(Int.self, forKey: .available)
         credits = try container.decodeIfPresent([ResetCreditSummary].self, forKey: .credits) ?? []
+        advice = try container.decodeIfPresent(String.self, forKey: .advice)
+        adviceKind = try container.decodeIfPresent(String.self, forKey: .adviceKind)
+    }
+}
+
+struct UsageProjectionResponse: Decodable {
+    let windowKey: String?
+    let status: String?
+    let weekPace: UsageProjectionPaceResponse?
+    let recentPace: UsageProjectionPaceResponse?
+    let summary: String?
+
+    enum CodingKeys: String, CodingKey {
+        case windowKey
+        case status
+        case weekPace
+        case recentPace
+        case summary
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        windowKey = try container.decodeIfPresent(String.self, forKey: .windowKey)
+        status = try container.decodeIfPresent(String.self, forKey: .status)
+        weekPace = try container.decodeIfPresent(UsageProjectionPaceResponse.self, forKey: .weekPace)
+        recentPace = try container.decodeIfPresent(UsageProjectionPaceResponse.self, forKey: .recentPace)
+        summary = try container.decodeIfPresent(String.self, forKey: .summary)
+    }
+}
+
+struct UsageProjectionPaceResponse: Decodable {
+    let percentPerDay: Double?
+    let runsOutAt: String?
+    let capsBeforeReset: Bool?
+
+    enum CodingKeys: String, CodingKey {
+        case percentPerDay
+        case runsOutAt
+        case capsBeforeReset
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        percentPerDay = try container.decodeIfPresent(Double.self, forKey: .percentPerDay)
+        runsOutAt = try container.decodeIfPresent(String.self, forKey: .runsOutAt)
+        capsBeforeReset = try container.decodeIfPresent(Bool.self, forKey: .capsBeforeReset)
     }
 }
 
@@ -977,10 +1194,12 @@ struct DashboardView: View {
                     }
 
                     if let snapshot = viewModel.snapshot {
-                        ForEach(snapshot.providers) { provider in
+                        ForEach(snapshot.providers.indices, id: \.self) { index in
+                            let provider = snapshot.providers[index]
                             UsageProviderSection(
                                 provider: provider,
-                                incident: statusViewModel.snapshot.incident(for: provider.key)
+                                incident: statusViewModel.snapshot.incident(for: provider.key),
+                                strategy: index == 0 ? snapshot.strategy : nil
                             )
                         }
 
@@ -1046,11 +1265,16 @@ struct DashboardView: View {
 struct UsageProviderSection: View {
     let provider: UsageProviderViewData
     let incident: ProviderIncidentViewData?
+    let strategy: UsageStrategyViewData?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             if let incident, incident.isActive {
                 ProviderIncidentBanner(incident: incident)
+            }
+
+            if let strategy {
+                StrategyRow(strategy: strategy)
             }
 
             HStack(alignment: .firstTextBaseline) {
@@ -1082,16 +1306,55 @@ struct UsageProviderSection: View {
                     .foregroundStyle(.secondary)
             } else {
                 ForEach(provider.windows, id: \.key) { window in
-                    UsageWindowCard(title: window.label, window: window)
+                    UsageWindowCard(
+                        title: window.label,
+                        window: window,
+                        projection: window.key == "weekly" || window.key.hasPrefix("weekly_scoped:") ? window.projection : nil
+                    )
                 }
             }
 
             if let resetCredits = provider.resetCreditsAvailable {
-                ResetCreditsCard(available: resetCredits, credits: provider.resetCredits)
+                ResetCreditsCard(
+                    available: resetCredits,
+                    credits: provider.resetCredits
+                )
             }
         }
         .padding(12)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+    }
+}
+
+struct StrategyRow: View {
+    let strategy: UsageStrategyViewData
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: "lightbulb")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(strategy.tint)
+                .padding(.top, 1)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Strategy")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(strategy.tint)
+                Text(strategy.advice)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                if let secondary = strategy.secondary {
+                    Text(secondary.advice)
+                        .font(.caption2)
+                        .foregroundStyle(secondary.tint)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(strategy.tint.opacity(strategy.urgency == "act" ? 0.12 : 0.08), in: RoundedRectangle(cornerRadius: 8))
     }
 }
 
@@ -1225,6 +1488,7 @@ struct StatusLightCard: View {
 struct UsageWindowCard: View {
     let title: String
     let window: UsageWindowViewData?
+    let projection: UsageProjectionViewData?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -1244,6 +1508,13 @@ struct UsageWindowCard: View {
                 Text(resetText(now: context.date))
                     .font(.caption)
                     .foregroundStyle(.secondary)
+            }
+
+            if let projection {
+                Text(projection.summary)
+                    .font(.caption)
+                    .foregroundStyle(projection.tint)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
         .padding(12)

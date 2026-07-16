@@ -4,15 +4,21 @@
 
 Codex Status Light is a tiny local Mac menu bar app for Codex Desktop. It reads your own local Codex session files, runs a small local daemon, and shows whether your Codex threads are done, running, or waiting for you: green means done, yellow means running or possibly waiting, and red means attention is needed.
 
-It also shows your **usage** at a glance for both **Codex and Claude** — 5‑hour and weekly windows, with the exact reset time and a live countdown — plus a badge when OpenAI or Anthropic is having an incident.
+It also shows your **usage** at a glance for both **Codex and Claude** — session and weekly windows, with the exact reset time and a live countdown — **projects when you will run out**, tells you **what to do about it**, and badges provider incidents.
 
 ## What you get
 
 - **Attention traffic light** for your Codex sessions (green / yellow / red), computed by the daemon from your local rollout files. Subagent sessions are labelled by nickname.
-- **Usage for Codex and Claude** side by side: session (5‑hour) and weekly windows, percent used, exact reset time, and a countdown like `(in 2h 14m)`. Codex reset credits are listed under a click‑to‑expand row.
+- **Usage for Codex and Claude** side by side: session and weekly windows (including model‑scoped weeklies), percent used, exact reset time, and a countdown like `(in 2h 14m)`. Codex reset credits are listed under a click‑to‑expand row.
+- **Burn‑rate projection** under every weekly window: your recent pace leads, with the week average alongside — e.g. `Last 24h 9.4%/day — runs out Fri 18:20 · Week avg 3.1%/day`. Once it has learned your habits it adds `≈4.2 heavy days of budget left` (the median of your actual working days, so idle days don't flatter the number). It says `collecting burst data` rather than guessing while history builds.
+- **Strategy line** — the point of the whole thing. A local rules engine reads both providers and tells you what to *do*: spend a reset credit before it expires, front‑load work against a weekly that's about to reset unused, shift execution to the provider with headroom, or slow down and defer past a reset. It can show two complementary lines at once (e.g. *"spend the credit expiring Saturday"* + *"Claude resets Friday with ~88% unused — front‑load queued work"*). Optionally rephrased by a **local** LLM if you run one (see below); never by a paid API.
 - **Provider incidents**: if `status.openai.com` or `status.claude.com` reports an incident, the affected section shows a banner (click to open the status page) and a small `!` on that provider's logo.
 - **Menu bar pill**: a subtle green/yellow/red background with the Codex and Claude logos and their percentages.
 - **Self‑healing daemon**: it restarts itself when its code is updated, and refreshes the Claude token automatically when it expires.
+
+### Optional: local phrasing model
+
+The strategy engine writes its own advice and works fully offline with no extra setup. If you happen to run a local OpenAI‑compatible server (LM Studio, Ollama, vLLM…) on `http://localhost:8080`, the daemon will use it to reword that advice more naturally — at zero cost, and only if the reworded text still contains every fact, date and number from the original (otherwise it keeps its own wording). Point it elsewhere with `CODEX_LIGHT_LLM_URL`, or turn it off with `CODEX_LIGHT_LLM=0`. **No paid API is ever called for advice.**
 
 ## Prerequisites
 
@@ -50,7 +56,7 @@ Run:
 curl -s http://127.0.0.1:4173/api/status
 ```
 
-You should see JSON with an overall status, your recent Codex sessions, a `usage` block for Codex and Claude, an `incidents` block, and a `daemon` block. There are also two focused endpoints: `http://127.0.0.1:4173/api/usage` and `http://127.0.0.1:4173/api/incidents`. If the app says the source is offline, rerun `./install.sh` and try again.
+You should see JSON with an overall status, your recent Codex sessions, a `usage` block for Codex and Claude (each weekly window carrying its own `projection`, plus a top‑level `strategy`), an `incidents` block, and a `daemon` block. There are also two focused endpoints: `http://127.0.0.1:4173/api/usage` and `http://127.0.0.1:4173/api/incidents`. If the app says the source is offline, rerun `./install.sh` and try again.
 
 ## Uninstall
 
@@ -75,4 +81,4 @@ Scripts/build-bundle.sh
 
 ## Privacy
 
-Everything runs locally on your Mac. The daemon reads your own `~/.codex` files and your own Codex and Claude account tokens, writes local status data to `~/.codex-light`, and serves only `127.0.0.1:4173`. It fetches usage directly from OpenAI and Anthropic using your own tokens, and reads provider incident status from the public OpenAI/Anthropic status pages. When your Claude token expires, the daemon refreshes it and updates the Keychain item in place (the same way Claude Code does). Nothing is sent to this project, to the person who shared it with you, or to any separate server.
+Everything runs locally on your Mac. The daemon reads your own `~/.codex` files and your own Codex and Claude account tokens, writes local status data to `~/.codex-light`, and serves only `127.0.0.1:4173`. It fetches usage directly from OpenAI and Anthropic using your own tokens, reads provider incident status from the public OpenAI/Anthropic status pages, and stores a small usage history (`~/.codex-light/usage-history.jsonl`, 30‑day retention) locally so it can project your burn rate. When your Claude token expires, the daemon refreshes it and updates the Keychain item in place (the same way Claude Code does). Nothing is sent to this project, to the person who shared it with you, or to any separate server.
