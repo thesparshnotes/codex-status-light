@@ -159,9 +159,18 @@ export async function refreshClaudeToken({
 export function parseCodexUsage(usageJson = {}, creditsJson = {}) {
   const rateLimit = objectAt(usageJson, "rate_limit");
   const windows = [
-    codexWindow("session", "5-hour usage", rateLimit?.primary_window),
-    codexWindow("weekly", "Weekly usage", rateLimit?.secondary_window),
-  ].filter(Boolean);
+    codexWindowForDuration(rateLimit?.primary_window, "session", "5-hour usage"),
+    codexWindowForDuration(rateLimit?.secondary_window, "weekly", "Weekly usage"),
+  ]
+    .filter(Boolean)
+    .sort((left, right) => codexWindowOrder(left.key) - codexWindowOrder(right.key));
+
+  const keyCounts = new Map();
+  for (const window of windows) {
+    const count = (keyCounts.get(window.key) ?? 0) + 1;
+    keyCounts.set(window.key, count);
+    if (count > 1) window.key = `${window.key}_${count}`;
+  }
 
   const creditArray = Array.isArray(creditsJson?.credits) ? creditsJson.credits : null;
   const availableFromArray = creditArray
@@ -529,6 +538,25 @@ function codexWindow(key, label, raw) {
     usedPercent: usedPercent ?? 0,
     resetsAt: epochSecondsToIso(raw?.reset_at),
   };
+}
+
+function codexWindowForDuration(raw, fallbackKey, fallbackLabel) {
+  if (raw == null) return null;
+  const duration = numberOrNull(raw.limit_window_seconds);
+  if (duration === null || duration <= 0) return codexWindow(fallbackKey, fallbackLabel, raw);
+  if (duration <= 21_600) return codexWindow("session", "5-hour usage", raw);
+  if (duration >= 172_800) return codexWindow("weekly", "Weekly usage", raw);
+  return codexWindow(
+    `window_${duration}`,
+    `${Math.round(duration / 3600)}-hour usage`,
+    raw,
+  );
+}
+
+function codexWindowOrder(key) {
+  if (key === "session") return 0;
+  if (key === "weekly") return 1;
+  return 2;
 }
 
 function codexResetCredit(raw) {

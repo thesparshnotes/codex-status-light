@@ -65,7 +65,7 @@ struct UsageProviderViewData: Identifiable {
     }
 
     var weeklyWindow: UsageWindowViewData? {
-        window(named: "weekly") ?? windows.first { $0.key.hasPrefix("weekly") } ?? windows.dropFirst().first
+        window(named: "weekly") ?? windows.first { $0.key.hasPrefix("weekly") }
     }
 }
 
@@ -1500,9 +1500,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private static func compactUsagePair(provider: UsageProviderViewData) -> String {
-        let primary = provider.primaryWindow?.usedPercent.map(formatPercent) ?? "-"
-        let weekly = provider.weeklyWindow?.usedPercent.map(formatPercent) ?? "-"
-        return "\(primary)/\(weekly)"
+        guard !provider.windows.isEmpty else { return "-" }
+
+        let compactWindows: [UsageWindowViewData]
+        if provider.windows.count == 1 {
+            compactWindows = provider.windows
+        } else {
+            var includedSession = false
+            var includedWeekly = false
+            compactWindows = provider.windows.filter { window in
+                if window.key == "session", !includedSession {
+                    includedSession = true
+                    return true
+                }
+                if window.key.hasPrefix("weekly"), !includedWeekly {
+                    includedWeekly = true
+                    return true
+                }
+                return false
+            }
+        }
+
+        guard !compactWindows.isEmpty else { return "-" }
+        return compactWindows
+            .map { $0.usedPercent.map(formatPercent) ?? "-" }
+            .joined(separator: "/")
     }
 
     private static func statusPillImage(
