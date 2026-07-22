@@ -79,6 +79,19 @@ cd swift-source
 Scripts/build-bundle.sh
 ```
 
+## Known limitations
+
+- **Codex `HTTP 401` after idle days**: the Codex access token in `~/.codex/auth.json`
+  expires (~10‑day lifetime) and this daemon only reads it — it never refreshes it
+  (unlike the Claude token, which it does refresh). If you haven't used Codex past the
+  token's expiry you'll see a red `HTTP 401 …/wham/…` line and frozen usage numbers.
+  **Fix: just open Codex once** (Desktop or CLI) — it refreshes its own token and the
+  daemon recovers on the next 5‑minute poll. An auto‑refresh was analysed and
+  deliberately deferred; the decision record lives in the maintainers' architecture notes.
+- While a provider is erroring, its numbers (and any strategy advice built on them) are
+  the **last good** values, which may be hours old — check the timestamp shown on the
+  provider card.
+
 ## Privacy
 
 Everything runs locally on your Mac. The daemon reads your own `~/.codex` files and your own Codex and Claude account tokens, writes local status data to `~/.codex-light`, and serves only `127.0.0.1:4173`. It fetches usage directly from OpenAI and Anthropic using your own tokens, reads provider incident status from the public OpenAI/Anthropic status pages, and stores a small usage history (`~/.codex-light/usage-history.jsonl`, 30‑day retention) locally so it can project your burn rate. When your Claude token expires, the daemon refreshes it and updates the Keychain item in place (the same way Claude Code does). Nothing is sent to this project, to the person who shared it with you, or to any separate server.
