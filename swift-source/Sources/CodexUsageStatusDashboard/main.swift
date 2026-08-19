@@ -1773,28 +1773,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private static func compactUsagePair(provider: UsageProviderViewData) -> String {
         guard !provider.windows.isEmpty else { return "-" }
 
-        let compactWindows: [UsageWindowViewData]
-        if provider.windows.count == 1 {
-            compactWindows = provider.windows
-        } else {
-            var includedSession = false
-            var includedWeekly = false
-            compactWindows = provider.windows.filter { window in
-                if window.key == "session", !includedSession {
-                    includedSession = true
-                    return true
-                }
-                if window.key.hasPrefix("weekly"), !includedWeekly {
-                    includedWeekly = true
-                    return true
-                }
-                return false
-            }
+        var compactWindows: [UsageWindowViewData] = []
+        if let session = provider.windows.first(where: { $0.key == "session" }) {
+            compactWindows.append(session)
         }
+        if let weekly = provider.windows.first(where: { $0.key == "weekly" }) {
+            compactWindows.append(weekly)
+        }
+        compactWindows.append(contentsOf: provider.windows.filter { $0.key.hasPrefix("weekly_scoped:") })
 
-        guard !compactWindows.isEmpty else { return "-" }
-        return compactWindows
-            .map { $0.usedPercent.map(formatPercent) ?? "-" }
+        let compactPercents = compactWindows.compactMap { $0.usedPercent.map(formatPercent) }
+        guard !compactPercents.isEmpty else { return "-" }
+        return compactPercents
             .joined(separator: "/")
     }
 
