@@ -467,16 +467,30 @@ class HttpError extends Error {
 }
 
 async function readClaudeCredentials({ credentialsCommand, credentialsFile, execFileImpl }) {
+  let keychainError = null;
   try {
     const [command, ...args] = credentialsCommand;
     const { stdout } = await execFileWithImpl(execFileImpl, command, args, { timeout: 5000 });
     const credentials = JSON.parse(stdout);
     if (tokenFromClaudeCredentials(credentials)) return credentials;
-  } catch {
+    keychainError = "signed out: the Keychain item has no token";
+  } catch (error) {
     // Fall through to the file-backed credentials used on non-Keychain systems.
+    keychainError = String(error?.stderr || error?.message || error).trim().split("\n")[0];
   }
 
-  return readJsonFile(credentialsFile);
+  try {
+    return await readJsonFile(credentialsFile);
+  } catch (fileError) {
+    // The file only exists on non-Keychain systems; its ENOENT hides the real cause.
+    if (fileError?.code === "ENOENT" && keychainError) {
+      const hint = keychainError.startsWith("signed out")
+        ? "Claude Code is signed out — run `claude` and use /login"
+        : "allow access to the \"Claude Code-credentials\" Keychain item (Always Allow)";
+      throw new Error(`Claude login unavailable (${keychainError}). ${hint}.`);
+    }
+    throw fileError;
+  }
 }
 
 function tokenFromClaudeCredentials(credentials) {
